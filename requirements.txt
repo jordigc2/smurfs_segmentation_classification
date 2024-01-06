@@ -1,0 +1,6 @@
+tqdm
+tensorboardX
+scikit-image
+matplotlib
+jupyter
+numpy
