@@ -1,3 +1,5 @@
+import warnings
+
 import json
 from collections import defaultdict
 
@@ -5,29 +7,97 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
 
-class JSONParserCOCO:
-    def __init__(self, data_path, json_file_name) -> None:
+import torch
+import torch.utils.data as data
+from pycocotools.coco import COCO
+from torchvision import transforms
+
+class SmurfsDataset(data.Dataset):
+    def __init__(self, data_path, json_file_name, img_ids) -> None:
     
         with open(data_path + json_file_name, "r") as json_file:
             self.smurfs_data = json.load(json_file)
         
         self.data_path = data_path
+        self.coco = COCO(data_path + json_file_name)
 
         self.img_annotId_dict = defaultdict(list)        
         self.categ_dict = {} 
         self.ann_dict = {}
         self.imgs_dict = {}
 
-        self.color_list = ["red", "blue", "orange","green"]
+
+        self.color_list = ["yellow", "blue", "red","green"]
+        self.color_code = [[255,255,0], [0,0,255], [255,0,0], [0,255,0]]
 
         for ann in self.smurfs_data['annotations']: 
-            self.img_annotId_dict[ann['image_id']].append(ann['id']) 
-            #print("ann:", type(ann["id"]))
-            self.ann_dict[ann['id']]=ann
+            if ann['image_id'] in img_ids:
+                self.img_annotId_dict[ann['image_id']].append(ann['id']) 
+                #print("ann:", type(ann["id"]))
+                self.ann_dict[ann['id']]=ann
         for img in self.smurfs_data['images']:
-            self.imgs_dict[img['id']] = img
+            if img['id'] in img_ids:
+                self.imgs_dict[img['id']] = img
         for cat in self.smurfs_data['categories']:
             self.categ_dict[cat['id']] = cat
+
+    def __getitem__(self, index):
+        
+        imgs_ids = self.get_imgs_ids()
+
+        img_id = imgs_ids[index]
+        img_h = self.imgs_dict[img_id]['height']
+        img_w = self.imgs_dict[img_id]['width']
+        ann_ids = self.get_ann_by_imgs_id([img_id])
+
+        annotations = self.coco.loadAnns(ann_ids)
+        
+        multi_class_binary_mask = np.zeros((img_h, img_w, len(self.categ_dict)))
+
+        for ann in annotations:
+            mask_ann = self.coco.annToMask(ann)
+            multi_class_binary_mask[:,:, ann['category_id']] = \
+                np.logical_or(multi_class_binary_mask[:,:, ann['category_id']],
+                              mask_ann)
+
+        img = Image.open(self.get_img_path_by_id(img_id=img_id))
+
+        sample = {"image": img, "target": multi_class_binary_mask}
+
+        sample = self.transform(sample)
+
+        return sample  
+    
+    def __len__(self):
+        return len(self.imgs_dict)
+
+    def transform(self, sample):
+        img, mask = sample['image'], sample['target']  
+
+        # Suppress the specific warning during image conversion
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            img = img.resize((736,736)).convert('RGB')
+
+        mask_chn_list = []
+        for chn in range(mask.shape[2]):
+            mask_chn = mask[:,:,chn]
+            mask_pil = Image.fromarray(mask_chn).resize((736,736))
+            mask_resized = np.array(mask_pil)
+            mask_resized[mask_resized>0] = int(1)
+            mask_resized[mask_resized<=0] = int(0)
+            mask_chn_list.append(mask_resized)
+
+        mask = torch.from_numpy(np.array(mask_chn_list))
+
+        if img.size[0] > 1:
+            if torch.rand(1) > 0.5:
+                img = transforms.functional.hflip(img)
+                mask = torch.flip(mask, dims=[2])
+
+        trans_img = transforms.ToTensor()(img)
+
+        return {"image": trans_img, "target": mask}
 
     def get_imgs_ids(self):
         return list(self.imgs_dict.keys())
@@ -54,7 +124,12 @@ class JSONParserCOCO:
         save_file.close()
     
 
-    def visualize_annot_by_imgid(self, img_id):
+    def visualize_annot_by_imgid(self, index):
+
+        imgs_ids = self.get_imgs_ids()
+
+        img_id = imgs_ids[index]
+
         img = Image.open(self.get_img_path_by_id(img_id=img_id))
 
         plt.figure("img_id: " + str(img_id))
@@ -74,14 +149,16 @@ class JSONParserCOCO:
             t_box=plt.text(x, y+100, ann_id,  color='blue', fontsize=10)
             t_box.set_bbox(dict(boxstyle='square, pad=0',facecolor='white', alpha=0.6, edgecolor='blue'))
             plt.gca().add_patch(rect)
-        plt.imshow(img)
- 
-        
+        plt.imshow(img)         
 
+    def generate_multi_class_mask(self, mask):
+        mask_h = mask.shape[1]
+        mask_w = mask.shape[2]
+        rgb_mask = np.zeros((mask_h, mask_w,3))
 
-# if __name__== "__main__":
-#     data_path = "/data/smurfs_coco_format/"
-#     json_file_name = "result.json"
+        for cat in self.categ_dict:
+            rgb_mask[:,:,0]+= (mask[cat,:,:]*self.color_code[cat][0]) 
+            rgb_mask[:,:,1]+= (mask[cat,:,:]*self.color_code[cat][1]) 
+            rgb_mask[:,:,2]+= (mask[cat,:,:]*self.color_code[cat][2]) 
 
-#     dataset = JSONParserCOCO(data_path, json_file_name)
-#     dataset.visualize_annot_by_imgid(1)
+        return rgb_mask

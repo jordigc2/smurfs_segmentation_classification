@@ -4,3 +4,5 @@ scikit-image
 matplotlib
 jupyter
 numpy
+pycocotools
+segmentation-models-pytorch
