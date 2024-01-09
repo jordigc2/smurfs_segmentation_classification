@@ -1,5 +1,5 @@
 tqdm
-tensorboardX
+tensorboard
 scikit-image
 matplotlib
 jupyter

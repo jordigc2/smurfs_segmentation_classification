@@ -12,8 +12,10 @@ import torch.utils.data as data
 from pycocotools.coco import COCO
 from torchvision import transforms
 
+import random
+
 class SmurfsDataset(data.Dataset):
-    def __init__(self, data_path, json_file_name, img_ids) -> None:
+    def __init__(self, data_path, json_file_name, img_ids, preprocess_fn=None) -> None:
     
         with open(data_path + json_file_name, "r") as json_file:
             self.smurfs_data = json.load(json_file)
@@ -21,11 +23,13 @@ class SmurfsDataset(data.Dataset):
         self.data_path = data_path
         self.coco = COCO(data_path + json_file_name)
 
+        self.preprocess_fn = preprocess_fn
+
         self.img_annotId_dict = defaultdict(list)        
         self.categ_dict = {} 
         self.ann_dict = {}
         self.imgs_dict = {}
-
+        
 
         self.color_list = ["yellow", "blue", "red","green"]
         self.color_code = [[255,255,0], [0,0,255], [255,0,0], [0,255,0]]
@@ -88,16 +92,39 @@ class SmurfsDataset(data.Dataset):
             mask_resized[mask_resized<=0] = int(0)
             mask_chn_list.append(mask_resized)
 
-        mask = torch.from_numpy(np.array(mask_chn_list))
+        mask_aug = torch.from_numpy(np.array(mask_chn_list))
+
+        img_aug = img.copy()
 
         if img.size[0] > 1:
+            #Applying data aumentation to generalize:
+            # (hflip, rot, colorjitter)
             if torch.rand(1) > 0.5:
-                img = transforms.functional.hflip(img)
-                mask = torch.flip(mask, dims=[2])
+                img_aug = transforms.functional.hflip(img_aug)
+                mask_aug = torch.flip(mask_aug, dims=[2])
 
-        trans_img = transforms.ToTensor()(img)
+            if torch.rand(1) > 0.5:
+                range_rot = random.randint(0,10)                
 
-        return {"image": trans_img, "target": mask}
+                img_aug = transforms.functional.rotate(img_aug, range_rot)
+                mask_aug = transforms.functional.rotate(mask_aug,range_rot)
+
+            if torch.rand(1) > 0.5:
+                transform = \
+                        transforms.ColorJitter(brightness=(0.5,1.5),
+                       contrast=(1),saturation=(0.5,1.5))
+                img_aug = transform(img_aug)
+                                
+        if self.preprocess_fn is not None:
+            img_pre = self.preprocess_fn(np.array(img_aug))
+            # img_pre = img_aug.copy()
+        else:
+            img_pre = img_aug.copy()
+
+        trans_img = transforms.ToTensor()(img_pre)
+        img_tensor = transforms.ToTensor()(img_aug)
+
+        return {"image": trans_img, "target": mask_aug, "image_pil": img_tensor}
 
     def get_imgs_ids(self):
         return list(self.imgs_dict.keys())
@@ -117,6 +144,9 @@ class SmurfsDataset(data.Dataset):
     def set_annot_cat_by_id(self, cat_id, annot_id):
         self.ann_dict[annot_id]['category_id'] = cat_id
 
+    def set_preprocessing_fn(self, preprocess_fn):
+        self.preprocess_fn = preprocess_fn
+
     def update_json_cat_by_ann_id(self, cat_id, annot_id):
         self.smurfs_data['annotations'][annot_id]['category_id'] = cat_id
         save_file = open(self.data_path + "updated_result.json", "w")  
@@ -131,7 +161,7 @@ class SmurfsDataset(data.Dataset):
         img_id = imgs_ids[index]
 
         img = Image.open(self.get_img_path_by_id(img_id=img_id))
-
+        
         plt.figure("img_id: " + str(img_id))
 
         for ann_id in self.get_ann_by_imgs_id([img_id]):
@@ -151,14 +181,25 @@ class SmurfsDataset(data.Dataset):
             plt.gca().add_patch(rect)
         plt.imshow(img)         
 
-    def generate_multi_class_mask(self, mask):
+    def generate_multi_class_mask(self, mask, is_tensor=False):
         mask_h = mask.shape[1]
         mask_w = mask.shape[2]
-        rgb_mask = np.zeros((mask_h, mask_w,3))
 
-        for cat in self.categ_dict:
-            rgb_mask[:,:,0]+= (mask[cat,:,:]*self.color_code[cat][0]) 
-            rgb_mask[:,:,1]+= (mask[cat,:,:]*self.color_code[cat][1]) 
-            rgb_mask[:,:,2]+= (mask[cat,:,:]*self.color_code[cat][2]) 
+        if not is_tensor:
+            rgb_mask = np.zeros((mask_h, mask_w,3))
+            for cat in self.categ_dict:
+                rgb_mask[:,:,0]+= (mask[cat,:,:]*self.color_code[cat][0]) 
+                rgb_mask[:,:,1]+= (mask[cat,:,:]*self.color_code[cat][1]) 
+                rgb_mask[:,:,2]+= (mask[cat,:,:]*self.color_code[cat][2]) 
+                rgb_mask[rgb_mask > 255] = 255
+        else:
+            rgb_mask = np.zeros((3,mask_h, mask_w))
+            for cat in self.categ_dict:
+                rgb_mask[0,:,:]+= (mask[cat,:,:]*self.color_code[cat][0]//255) 
+                rgb_mask[1,:,:]+= (mask[cat,:,:]*self.color_code[cat][1]//255) 
+                rgb_mask[2,:,:]+= (mask[cat,:,:]*self.color_code[cat][2]//255)
+                rgb_mask[rgb_mask > 1] = 1
+
+            rgb_mask = torch.from_numpy(rgb_mask)
 
         return rgb_mask

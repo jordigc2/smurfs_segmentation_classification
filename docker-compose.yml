@@ -10,12 +10,13 @@ services:
     volumes:
       - ./src/:/workspace
       - ./data/:/data
+      - ./models:/models
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ~/.Xauthority:/root/.Xauthority
     network_mode: host
     privileged: true
     container_name: smurfs_container
-    # runtime: nvidia
+    runtime: nvidia
     environment:
       DISPLAY: ${DISPLAY}
       NAMESPACE: ${NAMESPACE}
